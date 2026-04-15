@@ -100,15 +100,12 @@ pipeline {
                         git config user.email "jenkins@local.com"
                         git config user.name "Jenkins CI"
 
-                        # Actualizar el tag de la imagen del API
-                        sed -i "s|image: ${API_IMAGE}:.*|image: ${API_IMAGE}:${BUILD_TAG}|" \\
-                            k8s/base/api/deployment.yaml
+                        # Actualizar newTag en el overlay de Kustomize
+                        cd k8s/overlays/dev
+                        sed -i "s|newTag: .*|newTag: ${BUILD_TAG}|g" kustomization.yaml
 
-                        # Actualizar el tag de la imagen de la UI
-                        sed -i "s|image: ${UI_IMAGE}:.*|image: ${UI_IMAGE}:${BUILD_TAG}|" \\
-                            k8s/base/ui/deployment.yaml
-
-                        git add k8s/base/api/deployment.yaml k8s/base/ui/deployment.yaml
+                        cd ../../..
+                        git add k8s/overlays/dev/kustomization.yaml
                         git commit -m "ci: deploy version ${BUILD_TAG} from Jenkins"
                         git push origin main
                     """
