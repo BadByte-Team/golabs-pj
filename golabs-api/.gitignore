@@ -1,0 +1,13 @@
+# Archivos de entorno y secrets — NUNCA commitear
+.env
+deployments/database/.env
+
+# Volúmenes de Docker
+volumes/
+
+# Binario compilado localmente
+api
+bin/
+
+# Herramienta de desarrollo (air)
+tmp/
