@@ -6,7 +6,7 @@ deployments/database/.env
 volumes/
 
 # Binario compilado localmente
-api
+/api
 bin/
 
 # Herramienta de desarrollo (air)
