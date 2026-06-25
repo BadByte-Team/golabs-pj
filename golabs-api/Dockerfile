@@ -1,32 +1,42 @@
-# syntax=docker/dockerfile:1
+# ──────────────────────────────────────
+# Dockerfile — GoLabs API (multi-stage)
+# ──────────────────────────────────────
 
-# ─── Stage 1: Build ────────────────────────────────────────────────────────
-FROM golang:1.25-alpine AS builder
+# ── Stage 1: Build ──
+FROM golang:1.22-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Download dependencies first to leverage layer caching
+# Copiar dependencias primero (cache de Docker layers)
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build
+# Copiar código fuente
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/api ./cmd/api
 
-# ─── Stage 2: Runtime ──────────────────────────────────────────────────────
-FROM alpine:3.21
+# Compilar binario estático
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /golabs-api ./cmd/main.go
 
-RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -S appgroup && adduser -S appuser -G appgroup
+# ── Stage 2: Runtime ──
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata
+
+# Usuario no-root
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
-COPY --from=builder /bin/api .
-COPY configs/ configs/
+COPY --from=builder /golabs-api .
 
+# Cambiar a usuario no-root
 USER appuser
+
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/healthz/ready || exit 1
 
-ENTRYPOINT ["./api"]
+ENTRYPOINT ["./golabs-api"]

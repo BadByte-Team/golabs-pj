@@ -1,138 +1,147 @@
+// ──────────────────────────────────────────────────────────────────
+// Jenkinsfile — GoLabs CI/CD Pipeline
+// Stages: Lint → Test → Build Docker → Push Docker Hub → Update Infra
+// ──────────────────────────────────────────────────────────────────
+
 pipeline {
     agent any
 
-    tools {
-        jdk 'jdk17'
-        nodejs 'node18'
+    environment {
+        // Docker Hub
+        DOCKERHUB_CREDS = credentials('dockerhub-id')
+        DOCKERHUB_USER  = 'gjisus'
+        API_IMAGE       = "${DOCKERHUB_USER}/golabs-api"
+        UI_IMAGE        = "${DOCKERHUB_USER}/golabs-ui"
+
+        // Git — repo de infraestructura
+        GITHUB_CREDS    = credentials('github-token-id')
+        INFRA_REPO      = 'https://github.com/BadByte-Team/golabs-infra.git'
+        INFRA_BRANCH    = 'main'
+
+        // Tag dinámico: BUILD_NUMBER + short commit hash
+        GIT_SHORT       = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+        IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_SHORT}"
     }
 
-    environment {
-        DOCKER_HUB_CREDS = credentials('dockerhub-id')
-        API_IMAGE        = "gjisus/golabs-api"
-        UI_IMAGE         = "gjisus/golabs-ui"
-        SCANNER_HOME     = tool('sonar-scanner')
-        GITHUB_USER      = "GutsNet"
-        REPO_ORG         = "BadByte-Team"
-        INFRA_REPO       = "golabs-infra"
+    options {
+        timeout(time: 15, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     stages {
 
-        stage('Checkout') {
+        // ── Stage 1: Lint & Vet (API) ──
+        stage('API — Lint & Vet') {
             steps {
-                checkout scm
-                script {
-                    env.GIT_COMMIT_SHORT = sh(
-                        script: 'git rev-parse --short HEAD',
-                        returnStdout: true
-                    ).trim()
-                    env.BUILD_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
-                    echo "BUILD_TAG: ${env.BUILD_TAG}"
+                dir('golabs-api') {
+                    sh '''
+                        echo "🔍 Running go vet..."
+                        go vet ./...
+                    '''
                 }
             }
         }
 
-        stage('SonarQube Analysis') {
+        // ── Stage 2: Tests (API) ──
+        stage('API — Test') {
             steps {
-                withSonarQubeEnv('sonarqube-server') {
-                    sh """
-                        ${SCANNER_HOME}/bin/sonar-scanner \
-                        -Dsonar.projectKey=golabs \
-                        -Dsonar.projectName=golabs \
-                        -Dsonar.sources=. \
-                        -Dsonar.exclusions=**/vendor/**,**/node_modules/**,**/dist/**
-                    """
+                dir('golabs-api') {
+                    sh '''
+                        echo "🧪 Running tests..."
+                        go test -v -race -coverprofile=coverage.out ./...
+                    '''
+                }
+            }
+            post {
+                always {
+                    dir('golabs-api') {
+                        archiveArtifacts artifacts: 'coverage.out', allowEmptyArchive: true
+                    }
                 }
             }
         }
 
-        // stage('Quality Gate') {
-        //     steps {
-        //         timeout(time: 5, unit: 'MINUTES') {
-        //             waitForQualityGate abortPipeline: true
-        //         }
-        //     }
-        // }
-
-        stage('Docker Build') {
+        // ── Stage 3: Build Docker Images ──
+        stage('Build Docker Images') {
             parallel {
                 stage('Build API') {
                     steps {
                         dir('golabs-api') {
-                            sh "docker build -t ${API_IMAGE}:${BUILD_TAG} ."
-                            sh "docker tag ${API_IMAGE}:${BUILD_TAG} ${API_IMAGE}:latest"
-                            echo "API imagen: ${API_IMAGE}:${BUILD_TAG}"
+                            sh "docker build -t ${API_IMAGE}:${IMAGE_TAG} -t ${API_IMAGE}:latest ."
                         }
                     }
                 }
                 stage('Build UI') {
                     steps {
                         dir('golabs-ui') {
-                            sh "docker build -t ${UI_IMAGE}:${BUILD_TAG} ."
-                            sh "docker tag ${UI_IMAGE}:${BUILD_TAG} ${UI_IMAGE}:latest"
-                            echo "UI imagen: ${UI_IMAGE}:${BUILD_TAG}"
+                            sh "docker build -t ${UI_IMAGE}:${IMAGE_TAG} -t ${UI_IMAGE}:latest ."
                         }
                     }
                 }
             }
         }
 
-        stage('Docker Push') {
+        // ── Stage 4: Push to Docker Hub ──
+        stage('Push Docker Images') {
             steps {
-                sh "echo ${DOCKER_HUB_CREDS_PSW} | docker login -u ${DOCKER_HUB_CREDS_USR} --password-stdin"
-                sh "docker push ${API_IMAGE}:${BUILD_TAG}"
-                sh "docker push ${API_IMAGE}:latest"
-                sh "docker push ${UI_IMAGE}:${BUILD_TAG}"
-                sh "docker push ${UI_IMAGE}:latest"
-                echo "Imágenes subidas a Docker Hub"
+                sh '''
+                    echo "${DOCKERHUB_CREDS_PSW}" | docker login -u "${DOCKERHUB_CREDS_USR}" --password-stdin
+
+                    docker push ${API_IMAGE}:${IMAGE_TAG}
+                    docker push ${API_IMAGE}:latest
+
+                    docker push ${UI_IMAGE}:${IMAGE_TAG}
+                    docker push ${UI_IMAGE}:latest
+
+                    docker logout
+                '''
             }
         }
 
-        stage('Deploy to GitOps Repo') {
+        // ── Stage 5: Update golabs-infra (GitOps trigger) ──
+        stage('Update Infra Repo') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'github-token-id', usernameVariable: 'GH_USER', passwordVariable: 'GITHUB_TOKEN')]) {
-                    sh """
-                        rm -rf infra-repo
+                sh '''
+                    echo "📦 Clonando golabs-infra..."
+                    rm -rf golabs-infra-update
+                    git clone https://${GITHUB_CREDS_USR}:${GITHUB_CREDS_PSW}@github.com/BadByte-Team/golabs-infra.git golabs-infra-update
 
-                        git clone https://${GH_USER}:${GITHUB_TOKEN}@github.com/${REPO_ORG}/${INFRA_REPO}.git infra-repo
+                    cd golabs-infra-update
 
-                        cd infra-repo
-                        git config user.email "jenkins@local.com"
-                        git config user.name "Jenkins CI"
+                    # Actualizar tag de la API en el overlay dev
+                    sed -i "s|newTag:.*# golabs-api|newTag: ${IMAGE_TAG} # golabs-api|g" k8s/overlays/dev/kustomization.yaml
 
-                        # Actualizar newTag en el overlay de Kustomize
-                        cd k8s/overlays/dev
-                        sed -i "s|newTag: .*|newTag: ${BUILD_TAG}|g" kustomization.yaml
+                    # Actualizar tag de la UI en el overlay dev
+                    sed -i "s|newTag:.*# golabs-ui|newTag: ${IMAGE_TAG} # golabs-ui|g" k8s/overlays/dev/kustomization.yaml
 
-                        cd ../../..
-                        git add k8s/overlays/dev/kustomization.yaml
-                        git commit -m "ci: deploy version ${BUILD_TAG} from Jenkins"
-                        git push origin main
-                    """
-                }
-            }
-        }
+                    git config user.email "jenkins@golabs.local"
+                    git config user.name "Jenkins CI"
+                    git add .
+                    git diff --cached --quiet && echo "No changes to commit" && exit 0
+                    git commit -m "ci: update images to ${IMAGE_TAG} [skip ci]"
+                    git push origin ${INFRA_BRANCH}
 
-        stage('Cleanup') {
-            steps {
-                sh "docker rmi ${API_IMAGE}:${BUILD_TAG} || true"
-                sh "docker rmi ${API_IMAGE}:latest || true"
-                sh "docker rmi ${UI_IMAGE}:${BUILD_TAG} || true"
-                sh "docker rmi ${UI_IMAGE}:latest || true"
-                sh "docker image prune -f || true"
+                    echo "✅ golabs-infra actualizado → ArgoCD sincronizará automáticamente"
+                '''
             }
         }
     }
 
     post {
+        always {
+            // Limpiar imágenes locales para ahorrar disco
+            sh '''
+                docker rmi ${API_IMAGE}:${IMAGE_TAG} || true
+                docker rmi ${UI_IMAGE}:${IMAGE_TAG} || true
+            '''
+            cleanWs()
+        }
         success {
-            echo "✅ Pipeline completado — API: ${API_IMAGE}:${BUILD_TAG} | UI: ${UI_IMAGE}:${BUILD_TAG}"
+            echo "✅ Pipeline completado — Tag: ${IMAGE_TAG}"
         }
         failure {
-            echo "❌ Pipeline fallido en stage: ${env.STAGE_NAME}"
-        }
-        always {
-            cleanWs()
+            echo "❌ Pipeline falló — Revisar logs"
         }
     }
 }
