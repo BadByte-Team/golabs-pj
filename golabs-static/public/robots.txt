@@ -1,0 +1,15 @@
+# NovaCipher Labs — robots.txt
+# Last updated: 2026-05-10
+
+User-agent: *
+Disallow: /admin/
+Disallow: /api/internal/
+Disallow: /staging/
+Disallow: /backups/
+
+# dev-flag-part1: CTF{r0b0ts_4nd_
+
+User-agent: Googlebot
+Allow: /
+
+Sitemap: https://novacipherlabs.com/sitemap.xml
